@@ -1,0 +1,54 @@
+name: Notify Teams on PR Merge
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  notify:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send PR merge info to Teams
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          ENV_NAME="UNKNOWN"
+          case "$BASE_BRANCH" in
+            main|master) ENV_NAME="PROD" ;;
+            release/*)   ENV_NAME="UAT" ;;
+            develop|dev) ENV_NAME="DEV" ;;
+            qa|test)     ENV_NAME="QA" ;;
+            *)           ENV_NAME="$BASE_BRANCH" ;;
+          esac
+
+          payload=$(cat <<EOF
+          {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "summary": "PR merged",
+            "themeColor": "2EB886",
+            "title": "✅ PR Merged → ${ENV_NAME}",
+            "sections": [{
+              "facts": [
+                { "name": "Repository", "value": "${REPO}" },
+                { "name": "PR", "value": "[${PR_TITLE}](${PR_URL})" },
+                { "name": "Author", "value": "${PR_AUTHOR}" },
+                { "name": "Base Branch", "value": "${BASE_BRANCH}" },
+                { "name": "Environment", "value": "${ENV_NAME}" }
+              ],
+              "markdown": true
+            }]
+          }
+          EOF
+          )
+
+          curl -sS -H "Content-Type: application/json" \
+               -d "$payload" \
+               "$TEAMS_WEBHOOK_URL"
