@@ -1,69 +1,50 @@
-name: Notify Teams on PR Merge
+set -euo pipefail
 
-on:
-  pull_request:
-    types: [closed]
+TEAMS_WEBHOOK_URL="$(printf '%s' "$TEAMS_WEBHOOK_URL" | tr -d '\r\n')"
 
-jobs:
-  notify:
-    if: github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
+ENV_NAME="UNKNOWN"
+case "$BASE_BRANCH" in
+  main|master) ENV_NAME="PROD" ;;
+  release/*)   ENV_NAME="UAT" ;;
+  develop|dev) ENV_NAME="DEV" ;;
+  qa|test)     ENV_NAME="QA" ;;
+  *)           ENV_NAME="$BASE_BRANCH" ;;
+esac
 
-    steps:
-      - name: Send PR merge info to Teams
-        env:
-          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
+# ✅ Only notify for QA and PROD
+if [ "$ENV_NAME" != "QA" ] && [ "$ENV_NAME" != "PROD" ]; then
+  echo "Skipping Teams notification for ENV_NAME=$ENV_NAME"
+  exit 0
+fi
 
-          # Normalize webhook URL (removes hidden CR/LF that break curl)
-          TEAMS_WEBHOOK_URL="$(printf '%s' "$TEAMS_WEBHOOK_URL" | tr -d '\r\n')"
+payload="$(jq -n \
+  --arg repo "$REPO" \
+  --arg pr_title "$PR_TITLE" \
+  --arg pr_url "$PR_URL" \
+  --arg author "$PR_AUTHOR" \
+  --arg base "$BASE_BRANCH" \
+  --arg env "$ENV_NAME" \
+  '{
+    "@type":"MessageCard",
+    "@context":"http://schema.org/extensions",
+    "summary":"PR merged",
+    "themeColor":"2EB886",
+    "title":("PR Merged -> " + $env),
+    "sections":[
+      {
+        "facts":[
+          {"name":"Repository","value":$repo},
+          {"name":"PR","value":("[" + $pr_title + "](" + $pr_url + ")")},
+          {"name":"Author","value":$author},
+          {"name":"Base Branch","value":$base},
+          {"name":"Environment","value":$env}
+        ],
+        "markdown":true
+      }
+    ]
+  }'
+)"
 
-          # Map branch to environment
-          ENV_NAME="UNKNOWN"
-          case "$BASE_BRANCH" in
-            main|master) ENV_NAME="PROD" ;;
-            release/*)   ENV_NAME="UAT" ;;
-            develop|dev) ENV_NAME="DEV" ;;
-            qa|test)     ENV_NAME="QA" ;;
-            *)           ENV_NAME="$BASE_BRANCH" ;;
-          esac
-
-          # Build JSON payload safely using jq
-          payload="$(jq -n \
-            --arg repo "$REPO" \
-            --arg pr_title "$PR_TITLE" \
-            --arg pr_url "$PR_URL" \
-            --arg author "$PR_AUTHOR" \
-            --arg base "$BASE_BRANCH" \
-            --arg env "$ENV_NAME" \
-            '{
-              "@type":"MessageCard",
-              "@context":"http://schema.org/extensions",
-              "summary":"PR merged",
-              "themeColor":"2EB886",
-              "title":("PR Merged -> " + $env),
-              "sections":[
-                {
-                  "facts":[
-                    {"name":"Repository","value":$repo},
-                    {"name":"PR","value":("[" + $pr_title + "](" + $pr_url + ")")},
-                    {"name":"Author","value":$author},
-                    {"name":"Base Branch","value":$base},
-                    {"name":"Environment","value":$env}
-                  ],
-                  "markdown":true
-                }
-              ]
-            }'
-          )"
-
-          # Send to Teams
-          curl -sS -X POST "$TEAMS_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -d "$payload"
+curl -sS -X POST "$TEAMS_WEBHOOK_URL" \
+  -H "Content-Type: application/json" \
+  -d "$payload"
