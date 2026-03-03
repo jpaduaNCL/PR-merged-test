@@ -19,6 +19,12 @@ jobs:
           BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
           REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+
+          # Normalize webhook URL (removes hidden CR/LF that break curl)
+          TEAMS_WEBHOOK_URL="$(printf '%s' "$TEAMS_WEBHOOK_URL" | tr -d '\r\n')"
+
+          # Map branch to environment
           ENV_NAME="UNKNOWN"
           case "$BASE_BRANCH" in
             main|master) ENV_NAME="PROD" ;;
@@ -28,27 +34,36 @@ jobs:
             *)           ENV_NAME="$BASE_BRANCH" ;;
           esac
 
-          payload=$(cat <<EOF
-          {
-            "@type": "MessageCard",
-            "@context": "http://schema.org/extensions",
-            "summary": "PR merged",
-            "themeColor": "2EB886",
-            "title": "✅ PR Merged → ${ENV_NAME}",
-            "sections": [{
-              "facts": [
-                { "name": "Repository", "value": "${REPO}" },
-                { "name": "PR", "value": "[${PR_TITLE}](${PR_URL})" },
-                { "name": "Author", "value": "${PR_AUTHOR}" },
-                { "name": "Base Branch", "value": "${BASE_BRANCH}" },
-                { "name": "Environment", "value": "${ENV_NAME}" }
-              ],
-              "markdown": true
-            }]
-          }
-          EOF
-          )
+          # Build JSON payload safely using jq
+          payload="$(jq -n \
+            --arg repo "$REPO" \
+            --arg pr_title "$PR_TITLE" \
+            --arg pr_url "$PR_URL" \
+            --arg author "$PR_AUTHOR" \
+            --arg base "$BASE_BRANCH" \
+            --arg env "$ENV_NAME" \
+            '{
+              "@type":"MessageCard",
+              "@context":"http://schema.org/extensions",
+              "summary":"PR merged",
+              "themeColor":"2EB886",
+              "title":("PR Merged -> " + $env),
+              "sections":[
+                {
+                  "facts":[
+                    {"name":"Repository","value":$repo},
+                    {"name":"PR","value":("[" + $pr_title + "](" + $pr_url + ")")},
+                    {"name":"Author","value":$author},
+                    {"name":"Base Branch","value":$base},
+                    {"name":"Environment","value":$env}
+                  ],
+                  "markdown":true
+                }
+              ]
+            }'
+          )"
 
-          curl -sS -H "Content-Type: application/json" \
-               -d "$payload" \
-               "$TEAMS_WEBHOOK_URL"
+          # Send to Teams
+          curl -sS -X POST "$TEAMS_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$payload"
